@@ -6,10 +6,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Force SQLite for local development to avoid port 5432 errors
-DATABASE_URL = "sqlite:///./test_dev.db"
+# Defaults to SQLite for local testing if the cloud Postgres isn't ready
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./terminus_web2.db")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# SQLite needs check_same_thread=False
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -18,9 +21,9 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
-    phone = Column(String)
+    phone = Column(String)  # Storing the user's phone for SMS alerts
     hashed_password = Column(String)
-    role = Column(String)  # 'owner' or 'beneficiary'
+    role = Column(String) # 'owner' or 'beneficiary'
     
     status_record = relationship("OwnerStatus", back_populates="user", uselist=False)
 
@@ -38,7 +41,7 @@ class OwnerStatus(Base):
     beneficiary_phone = Column(String)
     
     is_beneficiary_confirmed = Column(Boolean, default=False)
-    check_in_count = Column(Integer, default=0) # 0: fine, 1: 30-day warning sent, 2: 44-day alert sent
+    check_in_count = Column(Integer, default=0)
 
     user = relationship("User", back_populates="status_record")
 

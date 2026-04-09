@@ -17,9 +17,9 @@ async def verify_claim(
     file: UploadFile = File(...), 
     db: Session = Depends(get_db)
 ):
-    # Phase 1: Stake Verification
+    # Phase 1: Verify the on-chain stake (Spam Protection)
     if not await verify_stake(stake_tx_id):
-        raise HTTPException(status_code=402, detail="Stake verification failed.")
+        raise HTTPException(status_code=402, detail="Valid $50 USDC stake not found.")
 
     path = os.path.join(TEMP_DIR, file.filename)
     try:
@@ -29,15 +29,16 @@ async def verify_claim(
         
         # Phase 2: AI OCR Extraction
         ai_data = await process_document(path)
+        
         if ai_data["confidence"] < 0.90:
-            raise HTTPException(status_code=422, detail="Low AI confidence.")
+            raise HTTPException(status_code=422, detail="AI confidence too low. Please re-upload a clearer image.")
 
-        # Phase 3: Privacy Matching
+        # Phase 3: Identity Matching against Web2 Database
         owner = db.query(OwnerStatus).filter(OwnerStatus.owner_name == username).first()
         if not owner or ai_data["extracted_name"].lower() != owner.owner_name.lower():
-            raise HTTPException(status_code=403, detail="Document name mismatch.")
+            raise HTTPException(status_code=403, detail="Name on document does not match Vault Owner.")
 
-        # Phase 4: Blockchain Execution
+        # Phase 4: ZK-Proof to Solana Smart Contract
         sol_tx = await trigger_solana_state_change(
             vault_id=owner.id,
             event_type=ai_data["document_type"],
@@ -47,7 +48,7 @@ async def verify_claim(
         return {"status": "SUCCESS", "challenge_period": "Started", "tx": sol_tx}
 
     finally:
-        # Phase 4: Purge
+        # Phase 5: The Purge (Compliance with Privacy NFRs)
         if os.path.exists(path):
             os.remove(path)
-            print(f"🗑️ File {file.filename} deleted from memory.")
+            print(f"🗑️ [PRIVACY] File {file.filename} deleted from server memory.")
