@@ -5,7 +5,7 @@ from pydantic import BaseModel, EmailStr
 from app.core.database import get_db, User
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 class UserCreate(BaseModel):
     username: str
