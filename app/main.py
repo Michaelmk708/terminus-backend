@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from app.core.database import engine, Base
 from app.api import auth, heartbeat, ocr, webhooks, vault, dual_sign, identity
 from app.services.watchdog import check_heartbeats
-
+from app.core.database import engine, Base, get_db
 # Create SQLite tables on startup
 Base.metadata.create_all(bind=engine)
 

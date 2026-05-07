@@ -1,31 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from passlib.context import CryptContext
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
-from app.core.database import get_db, User
+from app.services.notifications import generate_otp, send_twilio_otp, verify_otp
 
+# 1. THIS LINE FIXES THE ERROR. It must come before the endpoints!
 router = APIRouter()
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-class UserCreate(BaseModel):
+# 2. Your new OTP schemas
+class OTPRequest(BaseModel):
     username: str
-    email: EmailStr
     phone: str
-    password: str
-    role: str # 'owner' or 'beneficiary'
 
-@router.post("/signup")
-async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.username == user_data.username).first():
-        raise HTTPException(status_code=400, detail="Username already exists")
-    
-    new_user = User(
-        username=user_data.username,
-        email=user_data.email,
-        phone=user_data.phone, # Storing user's phone
-        hashed_password=pwd_context.hash(user_data.password),
-        role=user_data.role
-    )
-    db.add(new_user)
-    db.commit()
-    return {"message": f"{user_data.role.capitalize()} account created successfully"}
+class OTPVerify(BaseModel):
+    username: str
+    otp_code: str
+
+# 3. Your new endpoints
+@router.post("/request-otp")
+async def request_otp(req: OTPRequest):
+    otp_code = generate_otp(req.username)
+    send_twilio_otp(req.phone, otp_code)
+    return {"message": "OTP sent successfully."}
+
+@router.post("/verify-otp")
+async def check_otp(req: OTPVerify):
+    if verify_otp(req.username, req.otp_code):
+        return {"message": "OTP verified successfully."}
+    raise HTTPException(status_code=401, detail="Invalid or expired OTP.")
+
+# ... (Any of your other existing auth endpoints go down here) ...

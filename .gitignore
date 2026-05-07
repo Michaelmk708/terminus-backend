@@ -10,3 +10,4 @@ test_dev.db
 terminus_web2.db
 temp_uploads/
 venv/
+terminus_oracle_keypair.json
