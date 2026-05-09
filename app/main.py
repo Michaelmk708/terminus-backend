@@ -1,4 +1,5 @@
 import asyncio
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -19,16 +20,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Terminus Backend", lifespan=lifespan)
 
-# THE BRIDGE: Enable CORS for local development
+allowed_origins = [
+    origin.strip()
+    for origin in (
+        os.getenv("CORS_ALLOWED_ORIGINS")
+        or "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,https://termnus.netlify.app"
+    ).split(",")
+    if origin.strip()
+]
+
+# THE BRIDGE: Enable CORS for local and production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
-        '*'
-    ],
+    allow_origins=allowed_origins, # This now includes port 3001 and Netlify
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

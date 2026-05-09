@@ -1,13 +1,2 @@
-# Security: Never upload secrets
-.env
-
-# Python Cache: Ignore auto-generated junk
-__pycache__/
-*.pyc
-
-# Local Data: Do not upload the Web2 database or the ephemeral files
-test_dev.db
-terminus_web2.db
-temp_uploads/
-venv/
-terminus_oracle_keypair.json
+# Created by venv; see https://docs.python.org/3/library/venv.html
+*

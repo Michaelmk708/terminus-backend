@@ -32,8 +32,9 @@ async def panic_button(request: PanicRequest):
     if not verify_otp(request.owner_username, request.otp_code):
         raise HTTPException(status_code=401, detail="Invalid OTP. Panic action denied.")
     
-    # 2. Trigger Solana slashing function to cancel the claim
-    print(f"⚡ [PANIC BUTTON] OTP Verified. Slashing claimant stake for {request.owner_username}...")
-    # await trigger_solana_panic_slash(request.owner_username)
-    
-    return {"status": "success", "message": "Claim cancelled and stake slashed successfully."}
+    # 2. OTP is the required step-up gate before frontend builds panic tx.
+    print(f"⚡ [PANIC BUTTON] OTP verified for {request.owner_username}.")
+    return {
+        "status": "authorized",
+        "message": "OTP verified. Frontend may now build and send panic_button transaction.",
+    }

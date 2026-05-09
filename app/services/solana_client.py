@@ -42,6 +42,7 @@ from solders.system_program import TransferParams, transfer
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Processed, Confirmed
 from solana.rpc.types import TxOpts
+from app.services.retry_utils import async_retry, RPC_RETRY_CONFIG
 
 # Anchor IDL parsing
 from construct import Container
@@ -63,7 +64,7 @@ SOLANA_NETWORK = os.getenv("SOLANA_NETWORK", "devnet")
 # Terminus Smart Contract
 TERMINUS_PROGRAM_ID = os.getenv(
     "TERMINUS_PROGRAM_ID",
-    "EYjKKn4Qhjv2d2fE9yggedBdLJBPHiumwfbVLtofMMsb"
+    "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
 )
 
 # AI Oracle Keypair (CRITICAL: never expose in frontend)
@@ -74,7 +75,7 @@ ORACLE_KEYPAIR_PATH = os.getenv(
 
 # Challenge Parameters
 CHALLENGE_STAKE_LAMPORTS = int(os.getenv("CHALLENGE_STAKE_LAMPORTS", "5000000"))  # 0.005 SOL
-CHALLENGE_TIMEOUT_SECONDS = int(os.getenv("CHALLENGE_TIMEOUT_SECONDS", "5"))  # Hackathon demo
+CHALLENGE_TIMEOUT_SECONDS = int(os.getenv("CHALLENGE_TIMEOUT_SECONDS", "2592000"))  # 30 days
 
 # Vault PDA seed
 VAULT_SEED = b"vault"
@@ -214,7 +215,7 @@ async def _get_account_info(client: AsyncClient, pubkey: str) -> Optional[Dict[s
         Account info dict or None if not found
     """
     try:
-        response = await client.get_account_info(Pubkey(pubkey), Processed)
+        response = await client.get_account_info(Pubkey.from_string(pubkey), Processed)
         if response.value:
             return {
                 "lamports": response.value.lamports,
@@ -245,7 +246,7 @@ async def validate_vault_state(client: AsyncClient, vault_pda: str) -> bool:
         VaultNotActiveError: If vault is not in ACTIVE state
     """
     try:
-        response = await client.get_account_info(Pubkey(vault_pda), Confirmed)
+        response = await client.get_account_info(Pubkey.from_string(vault_pda), Confirmed)
         
         if not response.value or not response.value.data:
             raise VaultNotActiveError(
@@ -314,7 +315,7 @@ async def _validate_claimant_balance(
     """
     try:
         balance_response = await client.get_balance(
-            Pubkey(claimant_pubkey),
+            Pubkey.from_string(claimant_pubkey),
             Confirmed
         )
         balance = balance_response.value
@@ -361,12 +362,12 @@ def _build_trigger_challenge_instruction(
     Returns:
         Instruction object ready to sign
     """
-    program_id = Pubkey(TERMINUS_PROGRAM_ID)
-    system_program_id = Pubkey("11111111111111111111111111111111")
+    program_id = Pubkey.from_string(TERMINUS_PROGRAM_ID)
+    system_program_id = Pubkey.from_string("11111111111111111111111111111111")
     
-    ai_oracle = Pubkey(ai_oracle_pubkey)
-    claimant = Pubkey(claimant_pubkey)
-    vault = Pubkey(vault_pda)
+    ai_oracle = Pubkey.from_string(ai_oracle_pubkey)
+    claimant = Pubkey.from_string(claimant_pubkey)
+    vault = Pubkey.from_string(vault_pda)
     
     # Instruction accounts (order matters!)
     accounts = [
@@ -377,8 +378,9 @@ def _build_trigger_challenge_instruction(
     ]
     
     # Instruction data: discriminator + claim_type + stake_amount
-    # Anchor discriminator for trigger_challenge: first 8 bytes of SHA256("account:trigger_challenge")
-    discriminator = bytes.fromhex("5db3c5b1") + bytes(4)  # Placeholder; normally computed
+    # Anchor discriminator: first 8 bytes of SHA256("global:trigger_challenge")
+    import hashlib
+    discriminator = hashlib.sha256(b"global:trigger_challenge").digest()[:8]
     
     # Encode claim_type (u8) and stake_amount (u64, little-endian)
     data = discriminator + struct.pack("<B", claim_type) + struct.pack("<Q", stake_amount)
@@ -424,96 +426,17 @@ async def trigger_challenge(
     Raises:
         SolanaClientError: If any step fails (network, validation, etc.)
     """
-    if stake_amount is None:
-        stake_amount = CHALLENGE_STAKE_LAMPORTS
-    
-    print(f"\n⛓️  [SOLANA_CLIENT] Triggering challenge...")
-    print(f"    Owner: {vault_owner[:8]}...{vault_owner[-4:]}")
-    print(f"    Claimant: {claimant_pubkey[:8]}...{claimant_pubkey[-4:]}")
-    print(f"    Claim Type: {claim_type} (1=Medical, 2=Death)")
-    print(f"    Stake: {stake_amount} lamports ({stake_amount / 1e9:.6f} SOL)")
-    
-    try:
-        # Step 1: Load AI Oracle keypair
-        print("  [1/7] Loading AI Oracle keypair...")
-        oracle_keypair = _load_oracle_keypair()
-        oracle_pubkey = str(oracle_keypair.pubkey())
-        print(f"       ✓ Oracle: {oracle_pubkey[:8]}...{oracle_pubkey[-4:]}")
-        
-        # Step 2: Derive Vault PDA
-        print("  [2/7] Deriving Vault PDA...")
-        vault_pda, bump = derive_vault_pda(vault_owner)
-        print(f"       ✓ Vault PDA: {vault_pda[:8]}...{vault_pda[-4:]}")
-        
-        # Step 3: Connect to Solana RPC
-        print("  [3/7] Connecting to Solana RPC...")
-        client = AsyncClient(SOLANA_RPC_URL)
-        print(f"       ✓ Connected to {SOLANA_NETWORK}")
-        
-        # Step 4: Validate vault is ACTIVE
-        print("  [4/7] Validating vault state...")
-        await validate_vault_state(client, vault_pda)
-        print("       ✓ Vault is ACTIVE")
-        
-        # Step 5: Validate claimant has sufficient funds
-        print("  [5/7] Validating claimant balance...")
-        # Add buffer for transaction fees (~5000 lamports)
-        required_lamports = stake_amount + 5000
-        await _validate_claimant_balance(client, claimant_pubkey, required_lamports)
-        print(f"       ✓ Claimant has sufficient balance")
-        
-        # Step 6: Build instruction
-        print("  [6/7] Building trigger_challenge instruction...")
-        instruction = _build_trigger_challenge_instruction(
-            oracle_pubkey,
-            claimant_pubkey,
-            vault_pda,
-            claim_type,
-            stake_amount
-        )
-        print("       ✓ Instruction built")
-        
-        # Step 7: Send transaction (PLACEHOLDER)
-        print("  [7/7] Sending transaction to blockchain...")
-        print(f"       ⚠️  [PLACEHOLDER] TX signing requires claimant signer")
-        print(f"           In production, this would be sent via the Frontend")
-        print(f"           with claimant's wallet (Phantom, Web3Auth, etc.)")
-        
-        # For now, return a mock signature
-        # In production, the Frontend would build and sign this TX
-        from hashlib import sha256
-        mock_sig = base64.b58encode(
-            sha256(f"{oracle_pubkey}{claimant_pubkey}{vault_pda}".encode()).digest()[:32]
-        ).decode()
-        
-        await client.close()
-        
-        now = datetime.utcnow().isoformat()
-        expires_at = datetime.utcfromtimestamp(
-            datetime.utcnow().timestamp() + CHALLENGE_TIMEOUT_SECONDS
-        ).isoformat()
-        
-        return {
-            "status": "success",
-            "tx_signature": mock_sig,
-            "vault_pda": vault_pda,
-            "vault_bump": bump,
-            "oracle_pubkey": oracle_pubkey,
-            "challenge_started_at": now,
-            "challenge_expires_at": expires_at,
-            "claim_type": claim_type,
-            "stake_amount": stake_amount,
-        }
-    
-    except Exception as e:
-        print(f"       ✗ {type(e).__name__}: {str(e)}")
-        raise
+    raise SolanaClientError(
+        "Direct backend trigger_challenge is disabled in production. "
+        "Use the sequential dual-signing flow via /api/vault/{owner}/finalize-challenge."
+    )
 
 
 # ════════════════════════════════════════════════════════════════════
 #  UTILS FOR FRONTEND INTEGRATION
 # ════════════════════════════════════════════════════════════════════
 
+@async_retry(config=RPC_RETRY_CONFIG, operation_name="solana.get_vault_state")
 async def get_vault_state(vault_pda: str) -> Dict[str, Any]:
     """
     Reads the vault account state from Solana.
@@ -535,7 +458,7 @@ async def get_vault_state(vault_pda: str) -> Dict[str, Any]:
     """
     client = AsyncClient(SOLANA_RPC_URL)
     try:
-        response = await client.get_account_info(Pubkey(vault_pda), Confirmed)
+        response = await client.get_account_info(Pubkey.from_string(vault_pda), Confirmed)
         
         if not response.value or not response.value.data:
             raise ValueError(f"Vault {vault_pda} not found")

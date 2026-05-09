@@ -16,7 +16,6 @@ This endpoint is STEP 2 of the Sequential Dual-Signing Flow:
 """
 
 import base64
-import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -27,22 +26,71 @@ from app.services.solana_client import (
     _load_oracle_keypair,
     derive_vault_pda,
     SOLANA_RPC_URL,
-    TERMINUS_PROGRAM_ID,
-    TransactionFailedError,
 )
+from app.services.retry_utils import retry_with_backoff, RPC_RETRY_CONFIG
 
 # For transaction handling
 try:
     from solders.transaction import VersionedTransaction, Transaction
-    from solders.keypair import Keypair
     from solana.rpc.async_api import AsyncClient
-    from solana.rpc.commitment import Confirmed
 except ImportError:
     raise ImportError(
         "solders library not installed. Run: pip install solders"
     )
 
 router = APIRouter()
+
+
+def _cosign_versioned_tx(tx: VersionedTransaction, oracle_keypair):
+    message = tx.message
+    num_required = message.header.num_required_signatures
+    signer_keys = [str(k) for k in message.account_keys[:num_required]]
+    oracle_pubkey = str(oracle_keypair.pubkey())
+
+    if oracle_pubkey not in signer_keys:
+        raise HTTPException(
+            status_code=400,
+            detail="Oracle pubkey is not a required signer in transaction message",
+        )
+
+    oracle_index = signer_keys.index(oracle_pubkey)
+    claimant_signed = any(str(sig) != "1111111111111111111111111111111111111111111111111111111111111111" for sig in tx.signatures)
+    if not claimant_signed:
+        raise HTTPException(
+            status_code=403,
+            detail="No claimant signature detected in partially signed transaction",
+        )
+
+    signatures = list(tx.signatures)
+    oracle_signature = oracle_keypair.sign_message(bytes(message))
+    signatures[oracle_index] = oracle_signature
+    return VersionedTransaction.populate(message, signatures)
+
+
+def _cosign_legacy_tx(tx: Transaction, oracle_keypair):
+    message = tx.message
+    num_required = message.header.num_required_signatures
+    signer_keys = [str(k) for k in message.account_keys[:num_required]]
+    oracle_pubkey = str(oracle_keypair.pubkey())
+
+    if oracle_pubkey not in signer_keys:
+        raise HTTPException(
+            status_code=400,
+            detail="Oracle pubkey is not a required signer in transaction message",
+        )
+
+    signatures = list(tx.signatures)
+    claimant_signed = any(str(sig) != "1111111111111111111111111111111111111111111111111111111111111111" for sig in signatures)
+    if not claimant_signed:
+        raise HTTPException(
+            status_code=403,
+            detail="No claimant signature detected in partially signed transaction",
+        )
+
+    oracle_index = signer_keys.index(oracle_pubkey)
+    oracle_signature = oracle_keypair.sign_message(message.serialize())
+    signatures[oracle_index] = oracle_signature
+    return Transaction.populate(message, signatures)
 
 # ════════════════════════════════════════════════════════════════════
 #  REQUEST/RESPONSE MODELS
@@ -166,23 +214,11 @@ async def finalize_challenge_with_oracle_signature(
         print("  [3/5] Adding oracle signature to transaction...")
 
         try:
-            # Sign the same message that frontend signed
-            message_bytes = tx.message.serialize()
-            oracle_signature = oracle_keypair.sign_message(message_bytes)
-
-            print(f"       ✓ Oracle signature: {str(oracle_signature)[:16]}...")
-
-            # Add oracle's signature to the transaction
-            # The transaction object has a signatures list
-            if hasattr(tx, "signatures"):
-                # Ensure oracle signer is in the right position
-                # TX should have signers in account meta order
-                tx.signatures.append(oracle_signature)
-                print(f"       ✓ Added signature to TX (now {len(tx.signatures)} sigs)")
+            if is_versioned:
+                tx = _cosign_versioned_tx(tx, oracle_keypair)
             else:
-                raise ValueError(
-                    "Transaction format doesn't support adding signatures"
-                )
+                tx = _cosign_legacy_tx(tx, oracle_keypair)
+            print("       ✓ Oracle signature inserted at required signer index")
 
         except Exception as e:
             raise HTTPException(
@@ -203,8 +239,14 @@ async def finalize_challenge_with_oracle_signature(
             # Serialize for submission
             tx_bytes = bytes(tx)
 
-            # Submit
-            response = await client.send_raw_transaction(tx_bytes)
+            async def _submit_tx():
+                return await client.send_raw_transaction(tx_bytes)
+
+            response = await retry_with_backoff(
+                _submit_tx,
+                config=RPC_RETRY_CONFIG,
+                operation_name="dual_sign.submit_raw_transaction",
+            )
 
             # Extract signature
             if hasattr(response, "value"):

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
 from app.services.notifications import generate_otp, send_twilio_otp, verify_otp
+from app.services.retry_utils import retry_with_backoff, RPC_RETRY_CONFIG
+import asyncio
 
 # 1. THIS LINE FIXES THE ERROR. It must come before the endpoints!
 router = APIRouter()
@@ -17,8 +19,29 @@ class OTPVerify(BaseModel):
 # 3. Your new endpoints
 @router.post("/request-otp")
 async def request_otp(req: OTPRequest):
-    otp_code = generate_otp(req.username)
-    send_twilio_otp(req.phone, otp_code)
+    otp_code = generate_otp(req.username, req.phone)
+    await retry_with_backoff(
+        asyncio.to_thread,
+        send_twilio_otp,
+        req.phone,
+        otp_code,
+        config=RPC_RETRY_CONFIG,
+        operation_name="auth.send_otp_sms",
+    )
+    return {"message": "OTP sent successfully."}
+
+
+@router.post("/send-otp")
+async def send_otp_compat(req: OTPRequest):
+    otp_code = generate_otp(req.username, req.phone)
+    await retry_with_backoff(
+        asyncio.to_thread,
+        send_twilio_otp,
+        req.phone,
+        otp_code,
+        config=RPC_RETRY_CONFIG,
+        operation_name="auth.send_otp_sms",
+    )
     return {"message": "OTP sent successfully."}
 
 @router.post("/verify-otp")

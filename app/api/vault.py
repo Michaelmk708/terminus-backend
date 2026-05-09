@@ -361,53 +361,11 @@ async def trigger_challenge_endpoint(
         403: Vault not in Active state
         500: RPC or signing error
     """
-    try:
-        vault_pda, _ = derive_vault_pda(owner_pubkey)
-        
-        # Call the Solana client
-        result = await trigger_challenge(
-            vault_owner=owner_pubkey,
-            claimant_pubkey=request.claimant_pubkey,
-            claim_type=request.claim_type,
-            stake_amount=request.stake_amount,
-        )
-        
-        # Update cache
-        vault_state = db.query(VaultStateModel).filter(
-            VaultStateModel.vault_pda == vault_pda
-        ).first()
-        
-        if vault_state:
-            vault_state.state = 1  # ChallengePeriod
-            vault_state.state_name = "ChallengePeriod"
-            vault_state.challenge_end_time = int(
-                (datetime.now(timezone.utc) + timedelta(seconds=CHALLENGE_TIMEOUT_SECONDS)).timestamp()
-            )
-            vault_state.pending_claim_type = request.claim_type
-            vault_state.claim_stake = request.stake_amount or 5000000
-            vault_state.last_synced_at = datetime.now(timezone.utc)
-            db.commit()
-        
-        return ChallengeStartedResponse(
-            status="success",
-            tx_signature=result["tx_signature"],
-            vault_pda=vault_pda,
-            challenge_expires_at=result["challenge_expires_at"],
-        )
-    
-    except SolanaClientError as e:
-        db.rollback()
-        error_msg = str(e)
-        
-        if "insufficient" in error_msg.lower():
-            raise HTTPException(status_code=402, detail=error_msg)
-        elif "not active" in error_msg.lower():
-            raise HTTPException(status_code=403, detail=error_msg)
-        elif "invalid" in error_msg.lower():
-            raise HTTPException(status_code=400, detail=error_msg)
-        else:
-            raise HTTPException(status_code=500, detail=error_msg)
-    
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Challenge trigger failed: {str(e)}")
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Direct backend challenge trigger is disabled. "
+            "Use the dual-sign flow: frontend signs first, then POST to "
+            f"/api/vault/{owner_pubkey}/finalize-challenge."
+        ),
+    )

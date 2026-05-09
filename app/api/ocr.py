@@ -1,20 +1,22 @@
 import os
-import shutil
-import hashlib
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from app.services.solana_client import trigger_challenge  # <--- Integrated your client
+import tempfile
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from app.services.ocr_engine import process_document
 
 router = APIRouter()
-TEMP_DIR = "temp_uploads"
-
-# Ensure temp directory exists
-os.makedirs(TEMP_DIR, exist_ok=True)
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+ALLOWED_CONTENT_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
 
 @router.post("/verify-claim")
 async def verify_claim(
-    username: str, 
-    vault_owner: str, 
-    claimant_pubkey: str, 
+    username: str = Form(...),
+    vault_owner: str = Form(...),
+    claimant_pubkey: str = Form(...),
     file: UploadFile = File(...)
 ):
     """
@@ -23,50 +25,49 @@ async def verify_claim(
     3. Purges sensitive data for KDPA compliance
     4. Triggers Solana Challenge via the AI Oracle Keypair
     """
-    path = os.path.join(TEMP_DIR, file.filename)
-    
+    temp_path = None
+    extracted = None
     try:
-        # Save file temporarily
-        with open(path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # 1. AI OCR Extraction (Simulated for Hackathon)
-        print(f"🔍 [AI OCR] Extracting data for {username}...")
-        extracted_text = f"Death Certificate verified for {username} via Terminus AI"
-        
-        # 2. ZK-Hash Generation (The 'Proof' that goes on-chain if needed)
-        zk_hash = hashlib.sha256(extracted_text.encode()).hexdigest()
-        
-        # 3. KDPA Compliance: Delete sensitive image immediately
-        os.remove(path)
-        print(f"🗑️ [KDPA COMPLIANCE] {file.filename} purged. ZK-Proof: {zk_hash[:10]}...")
+        if file.content_type not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
 
-        # 4. TRIGGER SOLANA CHALLENGE 
-        # Using the logic from your solana_client.py
-        try:
-            solana_res = await trigger_challenge(
-                vault_owner=vault_owner,
-                claimant_pubkey=claimant_pubkey,
-                claim_type=2, # 2 = Deceased
-            )
-            
-            return {
-                "status": "SUCCESS", 
-                "zk_proof": zk_hash, 
-                "solana_tx": solana_res.get("tx_signature"),
-                "vault_pda": solana_res.get("vault_pda"),
-                "message": "AI Verification complete. Solana Challenge triggered."
-            }
-            
-        except Exception as sol_err:
-            print(f"❌ [SOLANA ERROR] {str(sol_err)}")
-            return {
-                "status": "OCR_SUCCESS_SOLANA_FAIL",
-                "zk_proof": zk_hash,
-                "error": "Document verified, but could not trigger on-chain challenge. Check Oracle balance."
-            }
+        suffix = os.path.splitext(file.filename or "")[1].lower() or ".bin"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_path = temp_file.name
+            total = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_FILE_SIZE_BYTES:
+                    raise HTTPException(status_code=413, detail="File too large (max 10MB)")
+                temp_file.write(chunk)
+
+        extracted = await process_document(temp_path)
+
+        return {
+            "status": "VERIFIED",
+            "username": username,
+            "vault_owner": vault_owner,
+            "claimant_pubkey": claimant_pubkey,
+            "document_type": extracted["document_type"],
+            "confidence": extracted["confidence"],
+            "zk_proof": extracted["zk_hash"],
+            "document_hash": extracted["document_hash"],
+            "message": "Document verification complete. Submit dual-sign challenge transaction.",
+        }
 
     except Exception as e:
-        if os.path.exists(path):
-            os.remove(path)
-        raise HTTPException(status_code=500, detail=str(e))
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"OCR verification failed: {str(e)}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                with open(temp_path, "wb") as wipe_f:
+                    wipe_f.write(b"\x00" * 4096)
+            finally:
+                os.remove(temp_path)
+        await file.close()
+        del extracted
