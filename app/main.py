@@ -199,22 +199,53 @@ class MessagePayload(BaseModel):
     body: str
     lit_hash: str
 
-# 1. Fetch State
+# --- AUTHENTICATION BYPASS ---
+@app.post("/api/v1/auth/login")
+async def mock_login(request: Request):
+    data = await request.json()
+    return {
+        "status": "success",
+        "user": {
+            "email": data.get("email", "investor@demo.com"),
+            "pubkey": "web3_pitch_mode_secured",
+            "id": 1
+        },
+        "access_token": "mock_jwt_token_for_pitch"
+    }
+
+@app.post("/api/v1/auth/register")
+async def mock_register(request: Request):
+    data = await request.json()
+    return {
+        "status": "success",
+        "user": {
+            "email": data.get("email", "investor@demo.com"),
+            "pubkey": "web3_pitch_mode_secured",
+            "id": 1
+        },
+        "access_token": "mock_jwt_token_for_pitch"
+    }
+
+# --- NON-TECHNICAL PITCH TIP ---
+@app.get("/api/v1/public/random-tip")
+async def random_tip():
+    return {
+        "tip": "Terminus ensures your family is taken care of, seamlessly passing on your digital assets and private letters when you no longer can."
+    }
+
+# --- DASHBOARD MOCKS ---
 @app.get("/api/v1/vault/state/{pubkey}")
 async def get_state(pubkey: str):
     return pitch_db
 
-# 2. Fetch Assets
 @app.get("/api/v1/vault/assets/{pubkey}")
 async def get_assets(pubkey: str):
     return {"assets": pitch_db["assets"]}
 
-# 3. Fetch Messages
 @app.get("/api/v1/vault/messages/{pubkey}")
 async def get_messages(pubkey: str):
     return {"messages": pitch_db["messages"]}
 
-# 4. Add Asset (Accepts FormData)
 @app.post("/api/v1/vault/add-asset")
 async def add_asset(
     owner_pubkey: str = Form(...),
@@ -236,20 +267,18 @@ async def add_asset(
     pitch_db["assets"].insert(0, new_asset)
     return {"status": "success", "asset": new_asset}
 
-# 5. Add Message/Letter (Accepts JSON)
 @app.post("/api/v1/vault/add-message")
 async def add_message(payload: MessagePayload):
     new_message = {
         "id": int(time.time()),
         "recipient": payload.recipient,
         "title": payload.title,
-        "preview": "Encrypted via Lit Protocol...",
+        "preview": "Securely locked until handover...",
         "createdAt": int(time.time())
     }
     pitch_db["messages"].insert(0, new_message)
     return {"status": "success", "message": new_message}
 
-# 6. Daily Heartbeat (Ping)
 @app.post("/api/v1/claims/ping-heartbeat")
 async def ping_heartbeat(
     vault_owner: str = Form(...), 
@@ -259,7 +288,6 @@ async def ping_heartbeat(
     pitch_db["prompt_answered_today"] = True
     return {"status": "success", "streak": pitch_db["streak"]}
 
-# 7. Defend Vault (Emergency Abort)
 @app.post("/api/v1/vault/defend")
 async def defend_vault(
     vault_owner: str = Form(...),
@@ -268,7 +296,6 @@ async def defend_vault(
     pitch_db["state"] = "ACTIVE"
     return {"status": "defended"}
 
-# Health check to ensure Render knows it's alive
 @app.get("/")
 async def root():
-    return {"status": "Terminus Pitch Backend is LIVE"}
+    return {"status": "Terminus  is LIVE"}
