@@ -202,7 +202,11 @@ class MessagePayload(BaseModel):
 # --- AUTHENTICATION BYPASS ---
 @app.post("/api/v1/auth/login")
 async def mock_login(request: Request):
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+        
     return {
         "status": "success",
         "user": {
@@ -215,7 +219,11 @@ async def mock_login(request: Request):
 
 @app.post("/api/v1/auth/register")
 async def mock_register(request: Request):
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+        
     return {
         "status": "success",
         "user": {
