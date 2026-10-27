@@ -47,7 +47,8 @@ class Vault(Base):
         default=lambda: datetime.now(timezone.utc), 
         onupdate=lambda: datetime.now(timezone.utc)
     )
-
+    trusted_recovery_pubkey = Column(String, nullable=True)
+encrypted_share_hash = Column(String, nullable=True)
 
 class VaultChallenge(Base):
     __tablename__ = "vault_challenges"

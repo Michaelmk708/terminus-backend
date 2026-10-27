@@ -201,9 +201,30 @@ class SolanaClientService:
             }
         finally:
             await client.close()
+    
+    @classmethod
+    async def ping_solana_heartbeat(cls, vault_owner: str) -> Dict[str, Any]:
+        """Pings the smart contract to reset the Dead Man's Switch timer."""
+        vault_pda, _ = cls.derive_vault_pda(vault_owner)
+        
+        # Placeholder instruction discriminator for PingHeartbeat
+        data = bytes([10, 20, 30, 40, 50, 60, 70, 80]) 
+        
+        accounts = [
+            AccountMeta(pubkey=vault_pda, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=ORACLE_KEYPAIR.pubkey(), is_signer=True, is_writable=True),
+        ]
+        
+        ping_ix = Instruction(PROGRAM_ID, data, accounts)
+        
+        return await cls.send_and_confirm_transaction(
+            ixs=[ping_ix],
+            signers=[ORACLE_KEYPAIR]
+        )
 
 
 # Module-level aliases to support direct imports across app/api modules
 derive_vault_pda = SolanaClientService.derive_vault_pda
 trigger_challenge = SolanaClientService.trigger_challenge
 verify_settlement = SolanaClientService.verify_settlement
+ping_solana_heartbeat = SolanaClientService.ping_solana_heartbeat
