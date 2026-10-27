@@ -1,3 +1,4 @@
+"""
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -51,10 +52,8 @@ setup_telemetry_logging(log_level=settings.LOG_LEVEL)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Application Lifespan Event Handler.
-    Manages startup execution (migrations, background queue workers) and graceful shutdown.
-    """
+    # Application Lifespan Event Handler.
+    # Manages startup execution (migrations, background queue workers) and graceful shutdown.
     logger.info("Starting Terminus Protocol Engine...")
 
     # 1. Run Alembic Database Migrations on Startup
@@ -156,7 +155,6 @@ app.include_router(beneficiary.router, prefix=f"{settings.API_V1_STR}/beneficiar
 
 @app.get("/", tags=["System Information"])
 async def root():
-    """Root endpoint providing service status and health indicators."""
     return {
         "status": "active",
         "project": settings.PROJECT_NAME,
@@ -166,3 +164,111 @@ async def root():
         "metrics_url": "/metrics",
         "health_url": "/health/detailed"
     }
+"""
+
+from fastapi import FastAPI, Form, File, UploadFile, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import time
+
+app = FastAPI(title="Terminus API (Pitch Mode)")
+
+# Allow Vercel frontend to communicate with Render backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- IN-MEMORY PITCH DATABASE ---
+pitch_db = {
+    "assets": [],
+    "messages": [],
+    "state": "ACTIVE",
+    "streak": 42,
+    "challenge_period_days": 90,
+    "prompt_answered_today": False
+}
+
+class MessagePayload(BaseModel):
+    owner_pubkey: str
+    recipient: str
+    title: str
+    body: str
+    lit_hash: str
+
+# 1. Fetch State
+@app.get("/api/v1/vault/state/{pubkey}")
+async def get_state(pubkey: str):
+    return pitch_db
+
+# 2. Fetch Assets
+@app.get("/api/v1/vault/assets/{pubkey}")
+async def get_assets(pubkey: str):
+    return {"assets": pitch_db["assets"]}
+
+# 3. Fetch Messages
+@app.get("/api/v1/vault/messages/{pubkey}")
+async def get_messages(pubkey: str):
+    return {"messages": pitch_db["messages"]}
+
+# 4. Add Asset (Accepts FormData)
+@app.post("/api/v1/vault/add-asset")
+async def add_asset(
+    owner_pubkey: str = Form(...),
+    name: str = Form(...),
+    category: str = Form(...),
+    note: str = Form(""),
+    value: str = Form("0"),
+    file: UploadFile = File(None)
+):
+    new_asset = {
+        "id": int(time.time()),
+        "name": name,
+        "category": category,
+        "note": note,
+        "value": float(value) if value else 0,
+        "createdAt": int(time.time()),
+        "hasFile": file is not None
+    }
+    pitch_db["assets"].insert(0, new_asset)
+    return {"status": "success", "asset": new_asset}
+
+# 5. Add Message/Letter (Accepts JSON)
+@app.post("/api/v1/vault/add-message")
+async def add_message(payload: MessagePayload):
+    new_message = {
+        "id": int(time.time()),
+        "recipient": payload.recipient,
+        "title": payload.title,
+        "preview": "Encrypted via Lit Protocol...",
+        "createdAt": int(time.time())
+    }
+    pitch_db["messages"].insert(0, new_message)
+    return {"status": "success", "message": new_message}
+
+# 6. Daily Heartbeat (Ping)
+@app.post("/api/v1/claims/ping-heartbeat")
+async def ping_heartbeat(
+    vault_owner: str = Form(...), 
+    journal_entry: str = Form(...)
+):
+    pitch_db["streak"] += 1
+    pitch_db["prompt_answered_today"] = True
+    return {"status": "success", "streak": pitch_db["streak"]}
+
+# 7. Defend Vault (Emergency Abort)
+@app.post("/api/v1/vault/defend")
+async def defend_vault(
+    vault_owner: str = Form(...),
+    proof_of_life_sig: str = Form(...)
+):
+    pitch_db["state"] = "ACTIVE"
+    return {"status": "defended"}
+
+# Health check to ensure Render knows it's alive
+@app.get("/")
+async def root():
+    return {"status": "Terminus Pitch Backend is LIVE"}
